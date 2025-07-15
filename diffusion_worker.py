@@ -9,7 +9,7 @@ from turbojpeg import TurboJPEG
 
 class DiffusionWorker(Worker):
     def __init__(self, host="localhost", distribute_port=5555, collect_port=5556):
-        self.processor = DiffusionProcessor(warmup=f"{self.batch_size}x1024x1024x3")
+        self.processor = DiffusionProcessor(warmup=f"2x1024x1024x3")
         self.jpeg = TurboJPEG()
         
         super().__init__(host, distribute_port, collect_port)
