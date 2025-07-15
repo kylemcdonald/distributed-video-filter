@@ -10,10 +10,6 @@ import sys
 import json
 import signal
 import os
-from perfetto import trace_processor
-from perfetto.trace_processor import TraceProcessor
-import tempfile
-import shutil
 
 # Constants
 CAPTURE_WIDTH = 640
