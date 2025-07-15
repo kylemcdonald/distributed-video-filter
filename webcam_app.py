@@ -6,8 +6,8 @@ import threading
 import time
 import queue
 import zmq
-import pickle
 import sys
+import json
 
 # Constants
 CAPTURE_WIDTH = 640
@@ -18,8 +18,8 @@ camera_fps = 30  # Increased from 15
 class WebcamApp:
     def __init__(self, inverter_push_port=5555, inverter_pull_port=5556):
         self.window = pyglet.window.Window(
-            width=TARGET_SIZE, 
-            height=TARGET_SIZE * 2,  # Double height to accommodate both frames
+            width=TARGET_SIZE * 2,  # Double width to accommodate both frames
+            height=TARGET_SIZE, 
             caption='Webcam Feed with Inverted Frame'
         )
         self.frame_data = None
@@ -33,16 +33,19 @@ class WebcamApp:
         # Frame processing queue
         self.frame_queue = queue.Queue(maxsize=2)
         
+        # Frame index tracking
+        self.frame_index = 0
+        
         # Initialize ZeroMQ context and sockets
         self.context = zmq.Context()
         
         # PUSH socket to send frames to inverter
         self.push_socket = self.context.socket(zmq.PUSH)
-        self.push_socket.connect(f"tcp://localhost:{inverter_push_port}")
+        self.push_socket.bind(f"tcp://*:{inverter_push_port}")
         
         # PULL socket to receive inverted frames from inverter
         self.pull_socket = self.context.socket(zmq.PULL)
-        self.pull_socket.connect(f"tcp://localhost:{inverter_pull_port}")
+        self.pull_socket.bind(f"tcp://*:{inverter_pull_port}")
         
         # Frame rate monitoring
         self.capture_fps_counter = 0
@@ -129,10 +132,14 @@ class WebcamApp:
                 frame_rgb = cv2.cvtColor(frame_cropped, cv2.COLOR_BGR2RGB)
                 self.frame_data = frame_rgb
                 
-                # Send frame to inverter via ZeroMQ
-                frame_data = pickle.dumps(frame_rgb)
+                # Increment frame index
+                self.frame_index += 1
+                
+                # Send frame and frame index to inverter via ZeroMQ
                 try:
-                    self.push_socket.send(frame_data, zmq.NOBLOCK)
+                    # Send frame index and frame data as multi-part message
+                    self.push_socket.send_string(str(self.frame_index), zmq.SNDMORE)
+                    self.push_socket.send(frame_rgb.tobytes(), zmq.NOBLOCK)
                 except zmq.Again:
                     # Skip if socket is not ready
                     pass
@@ -148,8 +155,15 @@ class WebcamApp:
         while self.running:
             try:
                 # Receive inverted frame from inverter
+                frame_index = self.pull_socket.recv_string(zmq.NOBLOCK)
+                process_id = self.pull_socket.recv_string(zmq.NOBLOCK)
                 inverted_data = self.pull_socket.recv(zmq.NOBLOCK)
-                inverted_frame = pickle.loads(inverted_data)
+                
+                # Print frame index and process ID
+                print(f"Received frame {frame_index} from process {process_id}")
+                
+                # Convert bytes back to numpy array
+                inverted_frame = np.frombuffer(inverted_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                 
                 # Update inverted texture on main thread
                 pyglet.clock.schedule_once(lambda dt: self.update_inverted_texture(inverted_frame), 0)
@@ -183,13 +197,13 @@ class WebcamApp:
     def on_draw(self):
         self.window.clear()
         
-        # Draw live feed on top half
+        # Draw live feed on left half
         if self.texture:
-            self.texture.blit(0, TARGET_SIZE, width=TARGET_SIZE, height=TARGET_SIZE)
+            self.texture.blit(0, 0, width=TARGET_SIZE, height=TARGET_SIZE)
         
-        # Draw inverted frame on bottom half
+        # Draw inverted frame on right half
         if self.inverted_texture:
-            self.inverted_texture.blit(0, 0, width=TARGET_SIZE, height=TARGET_SIZE)
+            self.inverted_texture.blit(TARGET_SIZE, 0, width=TARGET_SIZE, height=TARGET_SIZE)
         
         # Update draw FPS counter
         self.draw_fps_counter += 1
