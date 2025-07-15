@@ -4,15 +4,11 @@ import time
 import queue
 import json
 import os
-import numpy as np
 
 class Distributor:
-    def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=5):
+    def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=5, enable_trace_export=False):
         # Frame processing queue
         self.frame_queue = queue.Queue(maxsize=10)
-        
-        # Frame index tracking
-        self.frame_index = 0
         
         # Track the last frame sent to any client to prevent duplicates
         self.last_frame_sent = -1
@@ -35,24 +31,8 @@ class Distributor:
         self.collect_socket = self.context.socket(zmq.PULL)
         self.collect_socket.bind(f"tcp://*:{collect_port}")
         
-        # Perfetto trace configuration
-        self.trace_config = {
-            'buffers': [{'size_kb': 1024}],
-            'data_sources': [{
-                'config': {
-                    'name': 'org.chromium.trace_event',
-                    'chrome_trace_config': {
-                        'trace_config': {
-                            'included_categories': ['*'],
-                            'excluded_categories': [],
-                            'record_mode': 'record_continuously'
-                        }
-                    }
-                }
-            }]
-        }
-        
         # Frame timing tracking
+        self.enable_trace_export = enable_trace_export
         self.frame_timings = []
         self.trace_start_time = time.time()
         
@@ -79,6 +59,8 @@ class Distributor:
     
     def log_frame_timing(self, frame_index, timestamp, event_type="frame_captured"):
         """Log frame timing event for Perfetto trace"""
+        if not self.enable_trace_export:
+            return
         self.frame_timings.append({
             'frame_index': frame_index,
             'timestamp': timestamp,
@@ -89,6 +71,8 @@ class Distributor:
     
     def log_frame_complete_timing(self, frame_index, begin_time, end_time, event_type="frame_processed", pid=None):
         """Log frame timing as complete event with duration"""
+        if not self.enable_trace_export:
+            return
         self.frame_timings.append({
             'frame_index': frame_index,
             'begin_time': begin_time,
@@ -102,6 +86,9 @@ class Distributor:
     
     def export_perfetto_trace(self):
         """Export frame timing data to Perfetto trace format"""
+        if not self.enable_trace_export:
+            print("Trace export is disabled")
+            return
         if not self.frame_timings:
             print("No frame timing data to export")
             return
@@ -269,17 +256,13 @@ class Distributor:
                     # Log frame timing as complete event with duration
                     self.log_frame_complete_timing(int(frame_index), float(start_time), float(end_time), "frame_inverted_received", int(process_id))
                     
-                    # Print frame index and process ID
-                    processing_time = float(end_time) - float(start_time)        
-                    
                     # Store frame in buffer with metadata (don't reshape here - let the app handle it)
                     frame_index_int = int(frame_index)
                     self.received_frames[frame_index_int] = {
                         'frame_data': inverted_data,  # Store raw bytes
                         'process_id': process_id,
                         'start_time': float(start_time),
-                        'end_time': float(end_time),
-                        'processing_time': processing_time
+                        'end_time': float(end_time)
                     }
                     
                     # Update latest received frame
@@ -377,6 +360,6 @@ class Distributor:
         print(f"  Frame delay: {self.frame_delay} frames")
         
         # Export trace if not already done
-        if self.frame_timings:
+        if self.enable_trace_export and self.frame_timings:
             print("Exporting Perfetto trace on cleanup...")
             self.export_perfetto_trace() 
