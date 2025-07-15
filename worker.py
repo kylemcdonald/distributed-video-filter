@@ -1,9 +1,6 @@
-import cv2
 import zmq
-import numpy as np
 import time
 import os
-import signal
 
 class Worker:
     def __init__(self, host="localhost", distribute_port=5555, collect_port=5556):
@@ -27,19 +24,8 @@ class Worker:
         self.collect_socket = self.context.socket(zmq.PUSH)
         self.collect_socket.connect(f"tcp://{self.host}:{collect_port}")
         
-        # Set up signal handlers for clean shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        
         print(f"Worker started on ports {distribute_port} (request) and {collect_port} (send)")
         print(f"Process ID: {self.process_id}")
-    
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
-        if not self.shutdown_requested:
-            self.shutdown_requested = True
-            print(f"\nReceived signal {signum}, shutting down...")
-            self.running = False
     
     def start(self):
         """Start the worker"""
@@ -112,23 +98,3 @@ class Worker:
     def __call__(self, frame):
         """Process the input frame - to be implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement __call__ method")
-
-class InverterWorker(Worker):
-    def __init__(self, host="localhost", distribute_port=5555, collect_port=5556, delay=0.0):
-        super().__init__(host, distribute_port, collect_port)
-        self.delay = delay
-        print("Inverter worker started")
-        print(f"Processing delay: {self.delay} seconds")
-    
-    def __call__(self, frame_bytes):
-        """Invert the colors of the input frame"""
-        # Convert bytes to numpy array
-        frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(480, 480, 3)
-        
-        # Apply artificial delay if specified
-        if self.delay > 0:
-            time.sleep(self.delay)
-        
-        # Invert the image using bitwise NOT
-        inverted = cv2.bitwise_not(frame)
-        return inverted 
