@@ -135,9 +135,9 @@ class WebcamApp(Distributor):
         frame_updated = self.update_display_frame()
         if frame_updated:
             frame_data_bytes = self.get_frame_to_display()
-            if self.jpeg:
-                frame_data_bytes = self.jpeg.decode(frame_data_bytes).tobytes()
             if frame_data_bytes is not None:
+                if self.jpeg:
+                    frame_data_bytes = self.jpeg.decode(frame_data_bytes).tobytes()
                 image_data = pyglet.image.ImageData(
                     self.target_size, self.target_size, 'RGB', 
                     frame_data_bytes
