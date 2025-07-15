@@ -5,6 +5,9 @@ from pyglet.gl import *
 import threading
 import time
 import queue
+import zmq
+import pickle
+import sys
 
 # Constants
 CAPTURE_WIDTH = 640
@@ -13,19 +16,33 @@ TARGET_SIZE = 480
 camera_fps = 30  # Increased from 15
 
 class WebcamApp:
-    def __init__(self):
+    def __init__(self, inverter_push_port=5555, inverter_pull_port=5556):
         self.window = pyglet.window.Window(
             width=TARGET_SIZE, 
-            height=TARGET_SIZE, 
-            caption='Webcam Feed'
+            height=TARGET_SIZE * 2,  # Double height to accommodate both frames
+            caption='Webcam Feed with Inverted Frame'
         )
         self.frame_data = None
         self.texture = None
         self.running = False
         self.cap = None
         
+        # Texture management
+        self.inverted_texture = None
+        
         # Frame processing queue
         self.frame_queue = queue.Queue(maxsize=2)
+        
+        # Initialize ZeroMQ context and sockets
+        self.context = zmq.Context()
+        
+        # PUSH socket to send frames to inverter
+        self.push_socket = self.context.socket(zmq.PUSH)
+        self.push_socket.connect(f"tcp://localhost:{inverter_push_port}")
+        
+        # PULL socket to receive inverted frames from inverter
+        self.pull_socket = self.context.socket(zmq.PULL)
+        self.pull_socket.connect(f"tcp://localhost:{inverter_pull_port}")
         
         # Frame rate monitoring
         self.capture_fps_counter = 0
@@ -47,6 +64,11 @@ class WebcamApp:
         self.processing_thread = threading.Thread(target=self.process_frames)
         self.processing_thread.daemon = True
         self.processing_thread.start()
+        
+        # Start inverter output checking thread
+        self.inverter_thread = threading.Thread(target=self.check_inverter_output)
+        self.inverter_thread.daemon = True
+        self.inverter_thread.start()
     
     def read_frames(self):
         print("Starting OpenCV video capture...")
@@ -107,13 +129,50 @@ class WebcamApp:
                 frame_rgb = cv2.cvtColor(frame_cropped, cv2.COLOR_BGR2RGB)
                 self.frame_data = frame_rgb
                 
-                # Schedule texture update less frequently
-                pyglet.clock.schedule_once(self.update_texture, 0)
+                # Send frame to inverter via ZeroMQ
+                frame_data = pickle.dumps(frame_rgb)
+                try:
+                    self.push_socket.send(frame_data, zmq.NOBLOCK)
+                except zmq.Again:
+                    # Skip if socket is not ready
+                    pass
+                
+                # Schedule texture updates less frequently
+                pyglet.clock.schedule_once(self.update_textures, 0)
                 
             except queue.Empty:
                 continue
     
-    def update_texture(self, dt):
+    def check_inverter_output(self):
+        """Check for inverted frames from inverter output queue and update texture"""
+        while self.running:
+            try:
+                # Receive inverted frame from inverter
+                inverted_data = self.pull_socket.recv(zmq.NOBLOCK)
+                inverted_frame = pickle.loads(inverted_data)
+                
+                # Update inverted texture on main thread
+                pyglet.clock.schedule_once(lambda dt: self.update_inverted_texture(inverted_frame), 0)
+                
+            except zmq.Again:
+                # No message available, continue
+                time.sleep(0.01)
+                continue
+            except Exception as e:
+                print(f"Error receiving inverted frame: {e}")
+                time.sleep(0.01)
+                continue
+    
+    def update_inverted_texture(self, inverted_frame):
+        """Update the inverted texture with new frame data"""
+        if inverted_frame is not None:
+            image_data = pyglet.image.ImageData(
+                TARGET_SIZE, TARGET_SIZE, 'RGB', 
+                inverted_frame.tobytes()
+            )
+            self.inverted_texture = image_data.get_texture()
+    
+    def update_textures(self, dt):
         if self.frame_data is not None:
             image_data = pyglet.image.ImageData(
                 TARGET_SIZE, TARGET_SIZE, 'RGB', 
@@ -123,8 +182,14 @@ class WebcamApp:
     
     def on_draw(self):
         self.window.clear()
+        
+        # Draw live feed on top half
         if self.texture:
-            self.texture.blit(0, 0, width=TARGET_SIZE, height=TARGET_SIZE)
+            self.texture.blit(0, TARGET_SIZE, width=TARGET_SIZE, height=TARGET_SIZE)
+        
+        # Draw inverted frame on bottom half
+        if self.inverted_texture:
+            self.inverted_texture.blit(0, 0, width=TARGET_SIZE, height=TARGET_SIZE)
         
         # Update draw FPS counter
         self.draw_fps_counter += 1
@@ -145,6 +210,12 @@ class WebcamApp:
         if self.cap is not None:
             self.cap.release()
             print("Camera released.")
+        
+        # Close ZeroMQ sockets
+        self.push_socket.close()
+        self.pull_socket.close()
+        self.context.term()
+        print("ZeroMQ connections closed")
     
     def run(self):
         print("Starting webcam application...")
@@ -152,7 +223,15 @@ class WebcamApp:
         pyglet.app.run()
 
 def main():
-    app = WebcamApp()
+    # Parse command line arguments for ports
+    inverter_push_port = 5555
+    inverter_pull_port = 5556
+    
+    if len(sys.argv) >= 3:
+        inverter_push_port = int(sys.argv[1])
+        inverter_pull_port = int(sys.argv[2])
+    
+    app = WebcamApp(inverter_push_port, inverter_pull_port)
     app.run()
 
 if __name__ == "__main__":
