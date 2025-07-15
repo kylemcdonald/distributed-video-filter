@@ -43,7 +43,7 @@ def main():
     
     args = parser.parse_args()
     
-    worker = DiffusionWorker("kyle.local", args.distribute_port, args.collect_port)
+    worker = DiffusionWorker("100.83.2.63", args.distribute_port, args.collect_port)
     worker.start()
 
 if __name__ == "__main__":
