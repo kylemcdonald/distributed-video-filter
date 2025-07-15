@@ -4,11 +4,13 @@ import cv2
 import numpy as np
 import time
 import signal
+from turbojpeg import TurboJPEG
 
 class InverterWorker(Worker):
-    def __init__(self, host="localhost", distribute_port=5555, collect_port=5556, delay=0.0):
+    def __init__(self, host="localhost", distribute_port=5555, collect_port=5556, delay=0.0, use_jpeg=True):
         super().__init__(host, distribute_port, collect_port)
         self.delay = delay
+        self.jpeg = TurboJPEG() if use_jpeg else None
         
         # Set up signal handlers for clean shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -26,8 +28,10 @@ class InverterWorker(Worker):
     
     def __call__(self, frame_bytes):
         """Invert the colors of the input frame"""
-        # Convert bytes to numpy array
-        frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(480, 480, 3)
+        if self.jpeg:
+            frame = self.jpeg.decode(frame_bytes)
+        else:
+            frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(480, 480, 3)
         
         # Apply artificial delay if specified
         if self.delay > 0:
@@ -35,7 +39,11 @@ class InverterWorker(Worker):
         
         # Invert the image using bitwise NOT
         inverted = cv2.bitwise_not(frame)
-        return inverted 
+        
+        if self.jpeg:
+            return self.jpeg.encode(inverted)
+        else:
+            return inverted.tobytes()
     
 def main():
     # Parse command line arguments using argparse

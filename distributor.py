@@ -235,7 +235,7 @@ class Distributor:
                                     # Send frame index and frame data to client
                                     self.distribute_socket.send(client_id, zmq.SNDMORE)
                                     self.distribute_socket.send_string(str(self.current_frame_data['frame_index']), zmq.SNDMORE)
-                                    self.distribute_socket.send(self.current_frame_data['frame'].tobytes(), zmq.NOBLOCK)
+                                    self.distribute_socket.send(self.current_frame_data['frame'], zmq.NOBLOCK)
                                     
                                     # Update tracking
                                     self.last_frame_sent = self.current_frame_data['frame_index']

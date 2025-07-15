@@ -64,7 +64,7 @@ class Worker:
                         self.collect_socket.send_string(str(self.process_id), zmq.SNDMORE | zmq.NOBLOCK)
                         self.collect_socket.send_string(str(start_time), zmq.SNDMORE | zmq.NOBLOCK)
                         self.collect_socket.send_string(str(end_time), zmq.SNDMORE | zmq.NOBLOCK)
-                        self.collect_socket.send(processed_frame.tobytes(), zmq.NOBLOCK)
+                        self.collect_socket.send(processed_frame, zmq.NOBLOCK)
                     except zmq.Again:
                         print(f"Failed to send processed frame {frame_index} - socket buffer full")
                 

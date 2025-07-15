@@ -6,6 +6,7 @@ import time
 import signal
 import argparse
 from distributor import Distributor
+from turbojpeg import TurboJPEG
 
 # Constants
 CAPTURE_WIDTH = 640
@@ -13,12 +14,14 @@ CAPTURE_HEIGHT = 480
 camera_fps = 30  # Increased from 15
 
 class WebcamApp(Distributor):
-    def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=5, target_size=480):
+    def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=5, target_size=480, use_jpeg=True):
         # Initialize parent Distributor class with configurable frame delay
         super().__init__(distribute_port, collect_port, frame_delay)
         
         # Store target size for frame processing
         self.target_size = target_size
+        
+        self.jpeg = TurboJPEG() if use_jpeg else None
         
         # Pyglet window setup
         self.window = pyglet.window.Window(
@@ -103,7 +106,11 @@ class WebcamApp(Distributor):
             self.new_frame_available = True
             
             # Send frame to distributor for distribution to workers
-            self.add_frame_for_distribution(frame_rgb, current_time)
+            if self.jpeg:
+                frame_bytes = self.jpeg.encode(frame_rgb)
+                self.add_frame_for_distribution(frame_bytes, current_time)
+            else:
+                self.add_frame_for_distribution(frame_rgb.tobytes(), current_time)
         
         self.cap.release()
         print("Camera released.")
@@ -128,6 +135,8 @@ class WebcamApp(Distributor):
         frame_updated = self.update_display_frame()
         if frame_updated:
             frame_data_bytes = self.get_frame_to_display()
+            if self.jpeg:
+                frame_data_bytes = self.jpeg.decode(frame_data_bytes).tobytes()
             if frame_data_bytes is not None:
                 image_data = pyglet.image.ImageData(
                     self.target_size, self.target_size, 'RGB', 
