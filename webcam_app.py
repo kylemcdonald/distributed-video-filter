@@ -20,6 +20,7 @@ CAPTURE_WIDTH = 640
 CAPTURE_HEIGHT = 480
 TARGET_SIZE = 480
 camera_fps = 30  # Increased from 15
+FRAME_DELAY = 5  # Number of frames to delay display
 
 class WebcamApp:
     def __init__(self, distribute_port=5555, collect_port=5556):
@@ -37,7 +38,7 @@ class WebcamApp:
         self.inverted_texture = None
         
         # Frame processing queue - increased size and added overflow tracking
-        self.frame_queue = queue.Queue(maxsize=20)  # Increased from 10 to 20
+        self.frame_queue = queue.Queue(maxsize=10)  # Increased from 10 to 20
         
         # Frame index tracking
         self.frame_index = 0
@@ -45,9 +46,11 @@ class WebcamApp:
         # Track the last frame sent to any client to prevent duplicates
         self.last_frame_sent = -1
         
-        # Frame drop tracking
-        self.frames_dropped = 0
-        self.frames_processed = 0
+        # Frame reordering system
+        self.received_frames = {}  # Dictionary to store received frames by index
+        self.current_display_frame = 0  # Current frame being displayed
+        self.latest_received_frame = -1  # Latest frame index received from workers
+        self.frame_buffer_size = 50  # Maximum number of frames to keep in buffer
         
         # Initialize ZeroMQ context and sockets
         self.context = zmq.Context()
@@ -282,7 +285,6 @@ class WebcamApp:
                     print(f"Replaced old frame with new frame {self.frame_index-1}")
                 except queue.Full:
                     # Still full, drop the frame
-                    self.frames_dropped += 1
                     print(f"Frame {self.frame_index} dropped due to queue overflow. Total dropped: {self.frames_dropped}")
                     self.frame_index += 1
         
@@ -323,8 +325,6 @@ class WebcamApp:
                 # Schedule texture updates less frequently
                 pyglet.clock.schedule_once(self.update_textures, 0)
                 
-                self.frames_processed += 1
-                
             except queue.Empty:
                 # Shorter sleep when no frames available
                 time.sleep(0.001)
@@ -358,7 +358,7 @@ class WebcamApp:
                                     # Update tracking
                                     self.last_frame_sent = self.frame_data['frame_index']
                                     
-                                    print(f"Sent frame {self.frame_data['frame_index']} to client")
+                                    # print(f"Sent frame {self.frame_data['frame_index']} to client")
                                 except zmq.Again:
                                     print(f"Failed to send frame {self.frame_data['frame_index']} - socket buffer full")
                             # else:
@@ -372,7 +372,7 @@ class WebcamApp:
                 continue
     
     def check_inverter_output(self):
-        """Check for inverted frames from inverter output queue and update texture"""
+        """Check for inverted frames from inverter output queue and store in buffer"""
         while self.running:
             try:
                 # Poll for messages with shorter timeout
@@ -388,14 +388,27 @@ class WebcamApp:
                     self.log_frame_complete_timing(int(frame_index), float(start_time), float(end_time), "frame_inverted_received", int(process_id))
                     
                     # Print frame index and process ID
-                    processing_time = float(end_time) - float(start_time)                
-                    print(f"Received frame {frame_index} from process {process_id} in {processing_time*1000:.0f}ms")
+                    processing_time = float(end_time) - float(start_time)        
+                    # print(f"Received frame {frame_index} from process {process_id} in {processing_time*1000:.0f}ms")
                     
                     # Convert bytes back to numpy array
                     inverted_frame = np.frombuffer(inverted_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                     
-                    # Update inverted texture on main thread
-                    pyglet.clock.schedule_once(lambda dt: self.update_inverted_texture(inverted_frame), 0)
+                    # Store frame in buffer with metadata
+                    frame_index_int = int(frame_index)
+                    self.received_frames[frame_index_int] = {
+                        'frame': inverted_frame,
+                        'process_id': process_id,
+                        'start_time': float(start_time),
+                        'end_time': float(end_time),
+                        'processing_time': processing_time
+                    }
+                    
+                    # Update latest received frame
+                    self.latest_received_frame = max(self.latest_received_frame, frame_index_int)
+                    
+                    # Clean up old frames from buffer
+                    self.cleanup_old_frames()
                 
             except zmq.Again:
                 # No message available, continue
@@ -403,6 +416,63 @@ class WebcamApp:
             except Exception as e:
                 print(f"Error receiving inverted frame: {e}")
                 continue
+    
+    def cleanup_old_frames(self):
+        """Remove frames from buffer that are older than current display frame"""
+        frames_to_remove = []
+        for frame_index in self.received_frames:
+            if frame_index < self.current_display_frame:
+                frames_to_remove.append(frame_index)
+        
+        for frame_index in frames_to_remove:
+            del self.received_frames[frame_index]
+        
+        # Also limit buffer size to prevent memory issues
+        if len(self.received_frames) > self.frame_buffer_size:
+            # Remove oldest frames when buffer is too large
+            sorted_frames = sorted(self.received_frames.keys())
+            frames_to_remove = sorted_frames[:len(sorted_frames) - self.frame_buffer_size]
+            for frame_index in frames_to_remove:
+                del self.received_frames[frame_index]
+    
+    def get_frame_to_display(self):
+        """Get the frame to display based on current display frame index"""
+        target_frame = self.current_display_frame
+        if target_frame in self.received_frames:
+            return self.received_frames[target_frame]['frame']
+        else:
+            # Frame is missing, check if we have any frames to display
+            if self.received_frames:
+                # Find the closest available frame
+                available_frames = sorted(self.received_frames.keys())
+                if available_frames:
+                    closest_frame = min(available_frames, key=lambda x: abs(x - target_frame))
+                    # print(f"Missing frame {target_frame}, using closest available frame {closest_frame}")
+                    return self.received_frames[closest_frame]['frame']
+        return None
+    
+    def update_display_frame(self):
+        """Update the current display frame based on latest received frame"""
+        if self.latest_received_frame >= FRAME_DELAY:
+            # Calculate target frame (15 frames behind latest)
+            target_frame = self.latest_received_frame - FRAME_DELAY
+            
+            # Only advance if we have the target frame or if we're falling behind
+            if target_frame in self.received_frames or target_frame > self.current_display_frame:
+                self.current_display_frame = target_frame
+                return True
+            else:
+                # Frame is missing from buffer, count as dropped
+                # print(f"Display frame drop: target frame {target_frame} not in buffer")
+                # Still advance to prevent getting stuck
+                self.current_display_frame = target_frame
+                return True
+        elif self.latest_received_frame > 0:
+            # If we have some frames but not enough for the delay, advance to latest
+            if self.current_display_frame < self.latest_received_frame:
+                self.current_display_frame = self.latest_received_frame
+                return True
+        return False
     
     def update_inverted_texture(self, inverted_frame):
         """Update the inverted texture with new frame data"""
@@ -428,16 +498,41 @@ class WebcamApp:
         if self.texture:
             self.texture.blit(0, 0, width=TARGET_SIZE, height=TARGET_SIZE)
         
-        # Draw inverted frame on right half
-        if self.inverted_texture:
-            self.inverted_texture.blit(TARGET_SIZE, 0, width=TARGET_SIZE, height=TARGET_SIZE)
+        # Update display frame and get frame to show
+        frame_updated = self.update_display_frame()
+        frame_to_display = self.get_frame_to_display()
         
+        # Draw inverted frame on right half
+        if frame_to_display is not None:
+            # Update texture with the frame to display
+            image_data = pyglet.image.ImageData(
+                TARGET_SIZE, TARGET_SIZE, 'RGB', 
+                frame_to_display.tobytes()
+            )
+            self.inverted_texture = image_data.get_texture()
+            
+            # Draw the frame
+            self.inverted_texture.blit(TARGET_SIZE, 0, width=TARGET_SIZE, height=TARGET_SIZE)
+            
         # Update draw FPS counter
         self.draw_fps_counter += 1
         current_time = time.time()
         if current_time - self.draw_fps_start_time >= 5.0:
             draw_fps = self.draw_fps_counter / (current_time - self.draw_fps_start_time)
             print(f"Draw FPS: {draw_fps:.1f}")
+            print(f"Frame buffer: {len(self.received_frames)} frames, current display: {self.current_display_frame}, latest received: {self.latest_received_frame}")
+            
+            # Check for missing frames in the expected range
+            if self.latest_received_frame >= FRAME_DELAY:
+                expected_start = max(0, self.current_display_frame - 5)
+                expected_end = self.current_display_frame + 5
+                missing_frames = []
+                for i in range(expected_start, expected_end + 1):
+                    if i not in self.received_frames:
+                        missing_frames.append(i)
+                # if missing_frames:
+                #     print(f"Missing frames in range [{expected_start}, {expected_end}]: {missing_frames}")
+            
             self.draw_fps_counter = 0
             self.draw_fps_start_time = current_time
     
@@ -460,15 +555,12 @@ class WebcamApp:
         self.context.term()
         print("ZeroMQ connections closed")
         
-        # Print frame statistics
-        total_frames = self.frames_processed + self.frames_dropped
-        if total_frames > 0:
-            drop_rate = (self.frames_dropped / total_frames) * 100
-            print(f"Frame statistics:")
-            print(f"  Total frames captured: {total_frames}")
-            print(f"  Frames processed: {self.frames_processed}")
-            print(f"  Frames dropped: {self.frames_dropped}")
-            print(f"  Drop rate: {drop_rate:.1f}%")
+        # Print frame reordering statistics
+        print(f"Frame reordering statistics:")
+        print(f"  Latest received frame: {self.latest_received_frame}")
+        print(f"  Current display frame: {self.current_display_frame}")
+        print(f"  Frames in buffer: {len(self.received_frames)}")
+        print(f"  Frame delay: {FRAME_DELAY} frames")
         
         # Export trace if not already done
         if self.frame_timings:
