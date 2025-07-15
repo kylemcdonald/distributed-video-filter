@@ -9,12 +9,12 @@ from distributor import Distributor
 from turbojpeg import TurboJPEG
 
 # Constants
-CAPTURE_WIDTH = 640
-CAPTURE_HEIGHT = 480
-camera_fps = 30  # Increased from 15
+CAPTURE_WIDTH = 1280
+CAPTURE_HEIGHT = 720
+CAMERA_FPS = 30
 
 class WebcamApp(Distributor):
-    def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=5, target_size=480, use_jpeg=True):
+    def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=5, target_size=512, use_jpeg=True):
         # Initialize parent Distributor class with configurable frame delay
         super().__init__(distribute_port, collect_port, frame_delay)
         
@@ -67,9 +67,9 @@ class WebcamApp(Distributor):
     def read_frames(self):
         print("Starting OpenCV video capture...")
         self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
-        self.cap.set(cv2.CAP_PROP_FPS, camera_fps)
         
         # Set buffer size to minimize latency
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -193,8 +193,10 @@ def main():
                        help='Port for collecting processed frames from workers (default: 5556)')
     parser.add_argument('--frame-delay', type=int, default=5,
                        help='Frame delay for processing (default: 5)')
-    parser.add_argument('--target-size', type=int, default=480,
-                       help='Target size for frame processing (default: 480)')
+    parser.add_argument('--target-size', type=int, default=512,
+                       help='Target size for frame processing (default: 512)')
+    parser.add_argument('--use-jpeg', type=bool, default=True,
+                       help='Use JPEG encoding for frames (default: True)')
     
     args = parser.parse_args()
     
