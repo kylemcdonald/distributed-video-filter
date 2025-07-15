@@ -10,6 +10,9 @@ class Distributor:
         # Frame processing queue
         self.frame_queue = queue.Queue(maxsize=10)
         
+        # Frame index counter
+        self.frame_index_counter = 0
+        
         # Track the last frame sent to any client to prevent duplicates
         self.last_frame_sent = -1
         
@@ -167,8 +170,15 @@ class Distributor:
                     print(f"Processing rate: {1/avg_duration:.1f} FPS")
                     print(f"Total frames processed: {len(complete_events)}")
     
-    def add_frame_for_distribution(self, frame, frame_index, timestamp):
-        """Add a frame to the distribution queue"""
+    def add_frame_for_distribution(self, frame, timestamp=None):
+        """Add a frame to the distribution queue with automatic frame indexing"""
+        if timestamp is None:
+            timestamp = time.time()
+        
+        # Increment frame index counter
+        frame_index = self.frame_index_counter
+        self.frame_index_counter += 1
+        
         try:
             frame_data = {
                 'frame': frame,
@@ -201,7 +211,7 @@ class Distributor:
                     frame_data = self.frame_queue.get_nowait()
                     
                     # Store processed frame data with metadata
-                    self.frame_data = {
+                    self.current_frame_data = {
                         'frame': frame_data['frame'],
                         'frame_index': frame_data['frame_index']
                     }
@@ -218,20 +228,20 @@ class Distributor:
                     
                     if message == "READY":
                         # Client is ready for a frame
-                        if hasattr(self, 'frame_data') and self.frame_data is not None:
+                        if hasattr(self, 'current_frame_data') and self.current_frame_data is not None and self.current_frame_data.get('frame_index') is not None:
                             # Check if this is a new frame that hasn't been sent yet
-                            if self.frame_data['frame_index'] > self.last_frame_sent:
+                            if self.current_frame_data['frame_index'] > self.last_frame_sent:
                                 try:
                                     # Send frame index and frame data to client
                                     self.distribute_socket.send(client_id, zmq.SNDMORE)
-                                    self.distribute_socket.send_string(str(self.frame_data['frame_index']), zmq.SNDMORE)
-                                    self.distribute_socket.send(self.frame_data['frame'].tobytes(), zmq.NOBLOCK)
+                                    self.distribute_socket.send_string(str(self.current_frame_data['frame_index']), zmq.SNDMORE)
+                                    self.distribute_socket.send(self.current_frame_data['frame'].tobytes(), zmq.NOBLOCK)
                                     
                                     # Update tracking
-                                    self.last_frame_sent = self.frame_data['frame_index']
+                                    self.last_frame_sent = self.current_frame_data['frame_index']
                                     
                                 except zmq.Again:
-                                    print(f"Failed to send frame {self.frame_data['frame_index']} - socket buffer full")
+                                    print(f"Failed to send frame {self.current_frame_data.get('frame_index', 'unknown')} - socket buffer full")
                 
             except zmq.Again:
                 # No message available, continue
@@ -339,7 +349,8 @@ class Distributor:
             'buffer_size': len(self.received_frames),
             'current_display_frame': self.current_display_frame,
             'latest_received_frame': self.latest_received_frame,
-            'frame_delay': self.frame_delay
+            'frame_delay': self.frame_delay,
+            'total_frames_processed': self.frame_index_counter
         }
     
     def cleanup(self):

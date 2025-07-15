@@ -3,7 +3,6 @@ from worker import Worker
 import cv2
 import numpy as np
 import time
-import os
 import signal
 
 class InverterWorker(Worker):

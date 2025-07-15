@@ -75,26 +75,6 @@ class Worker:
                 print(f"Error in worker: {e}")
                 continue
     
-    def stop(self):
-        """Stop the worker"""
-        if not self.running:
-            return
-            
-        self.running = False
-        
-        try:
-            # Close sockets gracefully
-            if hasattr(self, 'dealer_socket'):
-                self.dealer_socket.close()
-            if hasattr(self, 'collect_socket'):
-                self.collect_socket.close()
-            if hasattr(self, 'context'):
-                self.context.term()
-        except Exception as e:
-            print(f"Error during shutdown: {e}")
-        
-        print("Worker stopped")
-    
     def __call__(self, frame):
         """Process the input frame - to be implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement __call__ method")

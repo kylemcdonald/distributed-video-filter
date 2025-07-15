@@ -1,17 +1,15 @@
 import cv2
-import numpy as np
 import pyglet
 from pyglet.gl import *
 import threading
 import time
 import signal
-import sys
+import argparse
 from distributor import Distributor
 
 # Constants
 CAPTURE_WIDTH = 640
 CAPTURE_HEIGHT = 480
-TARGET_SIZE = 480
 camera_fps = 30  # Increased from 15
 
 class WebcamApp(Distributor):
@@ -26,23 +24,21 @@ class WebcamApp(Distributor):
         self.window = pyglet.window.Window(
             width=self.target_size * 2,  # Double width to accommodate both frames
             height=self.target_size, 
-            caption='Webcam Feed with Inverted Frame'
+            caption='Webcam Feed'
         )
         
         # Camera and frame data
         self.frame_data = None
         self.texture = None
-        self.inverted_texture = None
+        self.processed_texture = None
         self.cap = None
+        self.new_frame_available = False
         
         # Frame rate monitoring
         self.capture_fps_counter = 0
         self.capture_fps_start_time = time.time()
         self.draw_fps_counter = 0
         self.draw_fps_start_time = time.time()
-        
-        # Frame index for camera capture
-        self.camera_frame_index = 0
         
         # Set up signal handlers for Ctrl+C
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -61,9 +57,7 @@ class WebcamApp(Distributor):
         self.frame_thread.start()
     
     def _signal_handler(self, signum, frame):
-        """Handle Ctrl+C and export Perfetto trace"""
-        print(f"\nReceived signal {signum}, exporting Perfetto trace...")
-        self.export_perfetto_trace()
+        print(f"\nReceived signal {signum}")
         self.cleanup()
         pyglet.app.exit()
     
@@ -97,92 +91,54 @@ class WebcamApp(Distributor):
                 self.capture_fps_counter = 0
                 self.capture_fps_start_time = current_time
             
-            # Process frame for display
-            # Flip the frame vertically to fix upside-down issue
-            # frame = cv2.flip(frame, 0)
-            
             # Center crop to target_size x target_size
             h, w, _ = frame.shape
             crop_x = (w - self.target_size) // 2
             crop_y = (h - self.target_size) // 2
             frame_cropped = frame[crop_y:crop_y+self.target_size, crop_x:crop_x+self.target_size]
-            
-            # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame_cropped, cv2.COLOR_BGR2RGB)
             
             # Store processed frame data for display
-            self.frame_data = {
-                'frame': frame_rgb,
-                'frame_index': self.camera_frame_index
-            }
+            self.frame_data = frame_rgb
+            self.new_frame_available = True
             
             # Send frame to distributor for distribution to workers
-            self.add_frame_for_distribution(frame_rgb, self.camera_frame_index, current_time)
-            
-            # Increment frame index for next frame
-            self.camera_frame_index += 1
-            
-            # Schedule texture updates less frequently
-            pyglet.clock.schedule_once(self.update_textures, 0)
+            self.add_frame_for_distribution(frame_rgb, current_time)
         
         self.cap.release()
         print("Camera released.")
     
-    def reshape_frame_data(self, frame_data_bytes):
-        """Reshape raw frame data bytes to numpy array"""
-        if frame_data_bytes is not None:
-            return np.frombuffer(frame_data_bytes, dtype=np.uint8).reshape(self.target_size, self.target_size, 3)
-        return None
-    
-    def update_inverted_texture(self, inverted_frame):
-        """Update the inverted texture with new frame data"""
-        if inverted_frame is not None:
+    def on_draw(self):
+        self.window.clear()
+        
+        # Update live feed texture if we have new frame data
+        if self.frame_data is not None and self.new_frame_available:
             image_data = pyglet.image.ImageData(
                 self.target_size, self.target_size, 'RGB', 
-                inverted_frame.tobytes()
-            )
-            self.inverted_texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
-            self.inverted_texture.anchor_x = 0
-            self.inverted_texture.anchor_y = 0
-    
-    def update_textures(self, dt):
-        if self.frame_data is not None:
-            image_data = pyglet.image.ImageData(
-                self.target_size, self.target_size, 'RGB', 
-                self.frame_data['frame'].tobytes()
+                self.frame_data.tobytes()
             )
             self.texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
             self.texture.anchor_x = 0
             self.texture.anchor_y = 0
-    
-    def on_draw(self):
-        self.window.clear()
+            self.new_frame_available = False
         
-        # Draw live feed on left half
         if self.texture:
             self.texture.blit(0, 0, width=self.target_size, height=self.target_size)
         
-        # Update display frame and get frame to show
         frame_updated = self.update_display_frame()
-        frame_data_bytes = self.get_frame_to_display()
-        
-        # Draw inverted frame on right half
-        if frame_data_bytes is not None:
-            # Reshape the raw bytes to numpy array
-            frame_to_display = self.reshape_frame_data(frame_data_bytes)
-            
-            if frame_to_display is not None:
-                # Update texture with the frame to display
+        if frame_updated:
+            frame_data_bytes = self.get_frame_to_display()
+            if frame_data_bytes is not None:
                 image_data = pyglet.image.ImageData(
                     self.target_size, self.target_size, 'RGB', 
-                    frame_to_display.tobytes()
+                    frame_data_bytes
                 )
-                self.inverted_texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
-                self.inverted_texture.anchor_x = 0
-                self.inverted_texture.anchor_y = 0
-                
-                # Draw the frame
-                self.inverted_texture.blit(self.target_size, 0, width=self.target_size, height=self.target_size)
+                self.processed_texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
+                self.processed_texture.anchor_x = 0
+                self.processed_texture.anchor_y = 0
+            
+        if self.processed_texture:
+            self.processed_texture.blit(self.target_size, 0, width=self.target_size, height=self.target_size)
             
         # Update draw FPS counter
         self.draw_fps_counter += 1
@@ -193,15 +149,14 @@ class WebcamApp(Distributor):
             
             # Get frame statistics from distributor
             stats = self.get_frame_stats()
-            print(f"Frame buffer: {stats['buffer_size']} frames, current display: {stats['current_display_frame']}, latest received: {stats['latest_received_frame']}")
+            print(f"Frame buffer: {stats['buffer_size']} frames, current display: {stats['current_display_frame']}, latest received: {stats['latest_received_frame']}, total processed: {stats['total_frames_processed']}")
             
             self.draw_fps_counter = 0
             self.draw_fps_start_time = current_time
     
     def on_key_press(self, symbol, modifiers):
         if symbol == pyglet.window.key.ESCAPE:
-            print("\nESC pressed, exporting Perfetto trace...")
-            self.export_perfetto_trace()
+            print("\nESC pressed")
             self.cleanup()
             pyglet.app.exit()
     
@@ -221,23 +176,20 @@ class WebcamApp(Distributor):
         pyglet.app.run()
 
 def main():
-    # Parse command line arguments for ports and configuration
-    distribute_port = 5555
-    collect_port = 5556
-    frame_delay = 5
-    target_size = 480
+    # Parse command line arguments using argparse
+    parser = argparse.ArgumentParser(description='Webcam application with distributed video processing')
+    parser.add_argument('--distribute-port', type=int, default=5555, 
+                       help='Port for distributing frames to workers (default: 5555)')
+    parser.add_argument('--collect-port', type=int, default=5556,
+                       help='Port for collecting processed frames from workers (default: 5556)')
+    parser.add_argument('--frame-delay', type=int, default=5,
+                       help='Frame delay for processing (default: 5)')
+    parser.add_argument('--target-size', type=int, default=480,
+                       help='Target size for frame processing (default: 480)')
     
-    if len(sys.argv) >= 3:
-        distribute_port = int(sys.argv[1])
-        collect_port = int(sys.argv[2])
+    args = parser.parse_args()
     
-    if len(sys.argv) >= 4:
-        frame_delay = int(sys.argv[3])
-    
-    if len(sys.argv) >= 5:
-        target_size = int(sys.argv[4])
-    
-    app = WebcamApp(distribute_port, collect_port, frame_delay, target_size)
+    app = WebcamApp(args.distribute_port, args.collect_port, args.frame_delay, args.target_size)
     app.run()
 
 if __name__ == "__main__":
