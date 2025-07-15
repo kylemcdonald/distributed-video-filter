@@ -27,12 +27,12 @@ class DiffusionWorker(Worker):
             print(f"\nReceived signal {signum}, shutting down...")
             self.running = False
     
-    def __call__(self, frame_bytes_batch):
+    def __call__(self, frame_bytes_batch, prompt):
         """Run image to image diffusion on the input frame"""
         # Convert bytes to numpy array
         input_frame_batch = [self.jpeg.decode(e) for e in frame_bytes_batch]
         input_frame_batch = [np.float32(e) / 255.0 for e in input_frame_batch]
-        processed_frame_batch = self.processor(input_frame_batch, "a psychedelic landscape")
+        processed_frame_batch = self.processor(input_frame_batch, prompt)
         processed_frame_batch = [np.uint8(e * 255) for e in processed_frame_batch]
         return [self.jpeg.encode(e) for e in processed_frame_batch]
     

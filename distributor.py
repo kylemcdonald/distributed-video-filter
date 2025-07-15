@@ -170,7 +170,7 @@ class Distributor:
                     print(f"Processing rate: {1/avg_duration:.1f} FPS")
                     print(f"Total frames processed: {len(complete_events)}")
     
-    def add_frame_for_distribution(self, frame, timestamp=None):
+    def add_frame_for_distribution(self, frame, timestamp=None, prompt=None):
         """Add a frame to the distribution queue with automatic frame indexing"""
         if timestamp is None:
             timestamp = time.time()
@@ -183,7 +183,8 @@ class Distributor:
             frame_data = {
                 'frame': frame,
                 'frame_index': frame_index,
-                'timestamp': timestamp
+                'timestamp': timestamp,
+                'prompt': prompt
             }
             self.frame_queue.put_nowait(frame_data)
             
@@ -213,7 +214,8 @@ class Distributor:
                     # Store processed frame data with metadata
                     self.current_frame_data = {
                         'frame': frame_data['frame'],
-                        'frame_index': frame_data['frame_index']
+                        'frame_index': frame_data['frame_index'],
+                        'prompt': frame_data['prompt']
                     }
                     
                 except queue.Empty:
@@ -235,6 +237,7 @@ class Distributor:
                                     # Send frame index and frame data to client
                                     self.distribute_socket.send(client_id, zmq.SNDMORE)
                                     self.distribute_socket.send_string(str(self.current_frame_data['frame_index']), zmq.SNDMORE)
+                                    self.distribute_socket.send_string(self.current_frame_data['prompt'], zmq.SNDMORE)
                                     self.distribute_socket.send(self.current_frame_data['frame'], zmq.NOBLOCK)
                                     
                                     # Update tracking
@@ -262,6 +265,10 @@ class Distributor:
                     start_time = self.collect_socket.recv_string(zmq.NOBLOCK)
                     end_time = self.collect_socket.recv_string(zmq.NOBLOCK)
                     inverted_data = self.collect_socket.recv(zmq.NOBLOCK)
+                    
+                    if int(frame_index) > self.frame_index_counter:
+                        print(f"Dropping frame index {frame_index} greater than frame index counter {self.frame_index_counter}")
+                        continue
                     
                     # Log frame timing as complete event with duration
                     self.log_frame_complete_timing(int(frame_index), float(start_time), float(end_time), "frame_inverted_received", int(process_id))

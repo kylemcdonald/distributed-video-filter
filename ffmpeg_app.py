@@ -6,6 +6,8 @@ import signal
 import argparse
 import subprocess
 import numpy as np
+import os
+import pygame
 from distributor import Distributor
 from turbojpeg import TurboJPEG
 
@@ -14,6 +16,7 @@ CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 CAMERA_FPS = 20
+PROMPT_CYCLE_TIME = 30
 
 class WebcamApp(Distributor):
     def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=8):
@@ -26,11 +29,34 @@ class WebcamApp(Distributor):
         self.jpeg = TurboJPEG()
         
         # Pyglet window setup
-        self.window = pyglet.window.Window(
-            width=self.target_size * 2,  # Double width to accommodate both frames
-            height=self.target_size, 
-            caption='Webcam Feed'
+        config = pyglet.gl.Config(
+            double_buffer=True,
+            sample_buffers=1,
+            samples=4,
+            alpha_size=8,
+            depth_size=24
         )
+        self.window = pyglet.window.Window(
+            fullscreen=True,
+            config=config,
+            vsync=True,
+            caption="Transformirror")
+        
+        self.show_unprocessed_frame = False
+        
+        self.prompts = self.load_prompts()
+        self.current_prompt_idx = 0
+        self.last_prompt_change = None
+        
+        # Initialize pygame mixer for audio
+        for attempt in range(3):
+            try:
+                pygame.mixer.init()
+                break
+            except pygame.error:
+                print("Failed to initialize pygame mixer. Retrying...", flush=True)
+                time.sleep(1)
+        print("Successfully initialized pygame mixer", flush=True)
         
         # Camera and frame data
         self.frame_data = None
@@ -60,6 +86,34 @@ class WebcamApp(Distributor):
         self.frame_thread = threading.Thread(target=self.read_frames)
         self.frame_thread.daemon = True
         self.frame_thread.start()
+        
+    def load_prompts(self):
+        try:
+            with open('prompts.txt', 'r') as f:
+                return [line.strip() for line in f if line.strip()]
+        except FileNotFoundError:
+            return ["A beautiful portrait"]
+        
+    def get_current_prompt(self):
+        current_time = time.time()
+        if self.last_prompt_change is None or current_time - self.last_prompt_change >= PROMPT_CYCLE_TIME:
+            n = len(self.prompts)
+            self.current_prompt_idx = (self.current_prompt_idx + 1) % n
+            self.last_prompt_change = current_time
+            
+            # Play corresponding audio file when prompt changes
+            try:
+                audio_idx = self.current_prompt_idx % (n // 2)
+                audio_file = f"audio/{audio_idx:02d}.wav"
+                if os.path.exists(audio_file):
+                    pygame.mixer.music.stop()
+                    pygame.mixer.music.load(audio_file)
+                    pygame.mixer.music.play()
+                print(f"Playing audio: {audio_file} ({self.current_prompt_idx} of {n})", flush=True)
+            except Exception as e:
+                print(f"Error playing audio: {str(e)}", flush=True)
+            
+        return self.prompts[self.current_prompt_idx]
     
     def _signal_handler(self, signum, frame):
         print(f"\nReceived signal {signum}")
@@ -147,7 +201,8 @@ class WebcamApp(Distributor):
                 
                 # Send frame to distributor for distribution to workers
                 frame_bytes = self.jpeg.encode(frame)
-                self.add_frame_for_distribution(frame_bytes, current_time)
+                prompt = self.get_current_prompt()
+                self.add_frame_for_distribution(frame_bytes, current_time, prompt)
         
         except Exception as e:
             print(f"Error in capture loop: {e}")
@@ -158,35 +213,39 @@ class WebcamApp(Distributor):
     def on_draw(self):
         self.window.clear()
         
+        window_width = self.window.width
+        window_height = self.window.height
+        
         # Update live feed texture if we have new frame data
-        if self.frame_data is not None and self.new_frame_available:
-            image_data = pyglet.image.ImageData(
-                self.target_size, self.target_size, 'RGB', 
-                self.frame_data.tobytes()
-            )
-            self.texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
-            self.texture.anchor_x = 0
-            self.texture.anchor_y = 0
-            self.new_frame_available = False
-        
-        if self.texture:
-            self.texture.blit(0, 0, width=self.target_size, height=self.target_size)
-        
-        frame_updated = self.update_display_frame()
-        if frame_updated:
-            frame_data_bytes = self.get_frame_to_display()
-            if frame_data_bytes is not None:
-                frame_data_bytes = self.jpeg.decode(frame_data_bytes).tobytes()
+        if self.show_unprocessed_frame:
+            if self.frame_data is not None and self.new_frame_available:
                 image_data = pyglet.image.ImageData(
                     self.target_size, self.target_size, 'RGB', 
-                    frame_data_bytes
+                    self.frame_data.tobytes()
                 )
-                self.processed_texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
-                self.processed_texture.anchor_x = 0
-                self.processed_texture.anchor_y = 0
+                self.texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
+                self.texture.anchor_x = 0
+                self.texture.anchor_y = 0
+                self.new_frame_available = False
             
-        if self.processed_texture:
-            self.processed_texture.blit(self.target_size, 0, width=self.target_size, height=self.target_size)
+            if self.texture:
+                self.texture.blit(0, 0, width=window_width, height=window_height)
+        else:
+            frame_updated = self.update_display_frame()
+            if frame_updated:
+                frame_data_bytes = self.get_frame_to_display()
+                if frame_data_bytes is not None:
+                    frame_data_bytes = self.jpeg.decode(frame_data_bytes).tobytes()
+                    image_data = pyglet.image.ImageData(
+                        self.target_size, self.target_size, 'RGB', 
+                        frame_data_bytes
+                    )
+                    self.processed_texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
+                    self.processed_texture.anchor_x = 0
+                    self.processed_texture.anchor_y = 0
+                
+            if self.processed_texture:
+                self.processed_texture.blit(0, 0, width=window_width, height=window_height)
             
         # Update draw FPS counter
         self.draw_fps_counter += 1
@@ -203,6 +262,10 @@ class WebcamApp(Distributor):
             self.draw_fps_start_time = current_time
     
     def on_key_press(self, symbol, modifiers):
+        if symbol == pyglet.window.key.U:
+            self.show_unprocessed_frame = not self.show_unprocessed_frame
+            print(f"Showing unprocessed frame: {self.show_unprocessed_frame}")
+        
         if symbol == pyglet.window.key.ESCAPE:
             print("\nESC pressed")
             self.cleanup()

@@ -51,6 +51,7 @@ class Worker:
                 if self.dealer_socket.poll(10):  # 10ms timeout                    
                     # Receive frame index and frame data from webcam app
                     frame_index = self.dealer_socket.recv_string(zmq.NOBLOCK)
+                    prompt = self.dealer_socket.recv_string(zmq.NOBLOCK)
                     frame_bytes = self.dealer_socket.recv(zmq.NOBLOCK)
                     frame_index_batch.append(frame_index)
                     frame_bytes_batch.append(frame_bytes)
@@ -63,7 +64,7 @@ class Worker:
                     
                     # Process the frame using the worker's __call__ method
                     start_time = time.time()
-                    processed_frame_batch = self(frame_bytes_batch)
+                    processed_frame_batch = self(frame_bytes_batch, prompt)
                     end_time = time.time()
                     
                     # Send processed frame, frame index, and process ID back to webcam app
