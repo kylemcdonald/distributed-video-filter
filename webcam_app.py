@@ -99,7 +99,7 @@ class WebcamApp(Distributor):
             
             # Process frame for display
             # Flip the frame vertically to fix upside-down issue
-            frame = cv2.flip(frame, 0)
+            # frame = cv2.flip(frame, 0)
             
             # Center crop to target_size x target_size
             h, w, _ = frame.shape
@@ -141,7 +141,9 @@ class WebcamApp(Distributor):
                 self.target_size, self.target_size, 'RGB', 
                 inverted_frame.tobytes()
             )
-            self.inverted_texture = image_data.get_texture()
+            self.inverted_texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
+            self.inverted_texture.anchor_x = 0
+            self.inverted_texture.anchor_y = 0
     
     def update_textures(self, dt):
         if self.frame_data is not None:
@@ -149,7 +151,9 @@ class WebcamApp(Distributor):
                 self.target_size, self.target_size, 'RGB', 
                 self.frame_data['frame'].tobytes()
             )
-            self.texture = image_data.get_texture()
+            self.texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
+            self.texture.anchor_x = 0
+            self.texture.anchor_y = 0
     
     def on_draw(self):
         self.window.clear()
@@ -173,7 +177,9 @@ class WebcamApp(Distributor):
                     self.target_size, self.target_size, 'RGB', 
                     frame_to_display.tobytes()
                 )
-                self.inverted_texture = image_data.get_texture()
+                self.inverted_texture = image_data.get_texture().get_transform(flip_y=True, flip_x=True)
+                self.inverted_texture.anchor_x = 0
+                self.inverted_texture.anchor_y = 0
                 
                 # Draw the frame
                 self.inverted_texture.blit(self.target_size, 0, width=self.target_size, height=self.target_size)
