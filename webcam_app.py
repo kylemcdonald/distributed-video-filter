@@ -160,8 +160,10 @@ class WebcamApp:
                         # Client is ready for a frame
                         if self.frame_data is not None:
                             # Send frame index and frame data to client
+                            current_time = time.time()
                             self.distribute_socket.send(client_id, zmq.SNDMORE)
                             self.distribute_socket.send_string(str(self.frame_index), zmq.SNDMORE)
+                            self.distribute_socket.send_string(str(current_time), zmq.SNDMORE)
                             self.distribute_socket.send(self.frame_data.tobytes(), zmq.NOBLOCK)
                             # print(f"Sent frame {self.frame_index} to client {client_id}")
                 
@@ -181,10 +183,12 @@ class WebcamApp:
                 # Receive inverted frame from inverter
                 frame_index = self.collect_socket.recv_string(zmq.NOBLOCK)
                 process_id = self.collect_socket.recv_string(zmq.NOBLOCK)
+                original_time = self.collect_socket.recv_string(zmq.NOBLOCK)
                 inverted_data = self.collect_socket.recv(zmq.NOBLOCK)
                 
                 # Print frame index and process ID
-                # print(f"Received frame {frame_index} from process {process_id}")
+                processing_time = time.time() - float(original_time)                
+                print(f"Received frame {frame_index} from process {process_id} in {processing_time*1000:.0f}ms")
                 
                 # Convert bytes back to numpy array
                 inverted_frame = np.frombuffer(inverted_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)

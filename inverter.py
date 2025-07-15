@@ -58,6 +58,7 @@ class InverterServer:
                 
                 # Receive frame index and frame data from webcam app
                 frame_index = self.dealer_socket.recv_string(zmq.NOBLOCK)
+                current_time = self.dealer_socket.recv_string(zmq.NOBLOCK)
                 frame_data = self.dealer_socket.recv(zmq.NOBLOCK)
                 
                 # Print frame index
@@ -76,6 +77,7 @@ class InverterServer:
                 # Send inverted frame, frame index, and process ID back to webcam app
                 self.collect_socket.send_string(frame_index, zmq.SNDMORE | zmq.NOBLOCK)
                 self.collect_socket.send_string(str(self.process_id), zmq.SNDMORE | zmq.NOBLOCK)
+                self.collect_socket.send_string(str(current_time), zmq.SNDMORE | zmq.NOBLOCK)
                 self.collect_socket.send(inverted_frame.tobytes(), zmq.NOBLOCK)
                 
             except zmq.Again:
