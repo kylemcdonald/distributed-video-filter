@@ -9,10 +9,10 @@ from turbojpeg import TurboJPEG
 
 class DiffusionWorker(Worker):
     def __init__(self, host="localhost", distribute_port=5555, collect_port=5556):
-        super().__init__(host, distribute_port, collect_port)
         self.processor = DiffusionProcessor(warmup=f"{self.batch_size}x1024x1024x3")
-        
         self.jpeg = TurboJPEG()
+        
+        super().__init__(host, distribute_port, collect_port)
         
         # Set up signal handlers for clean shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -30,11 +30,16 @@ class DiffusionWorker(Worker):
     def __call__(self, frame_bytes_batch, prompt):
         """Run image to image diffusion on the input frame"""
         # Convert bytes to numpy array
-        input_frame_batch = [self.jpeg.decode(e) for e in frame_bytes_batch]
-        input_frame_batch = [np.float32(e) / 255.0 for e in input_frame_batch]
-        processed_frame_batch = self.processor(input_frame_batch, prompt)
-        processed_frame_batch = [np.uint8(e * 255) for e in processed_frame_batch]
-        return [self.jpeg.encode(e) for e in processed_frame_batch]
+        try:
+            input_frame_batch = [self.jpeg.decode(e) for e in frame_bytes_batch]
+            input_frame_batch = [np.float32(e) / 255.0 for e in input_frame_batch]
+            processed_frame_batch = self.processor(input_frame_batch, prompt)
+            processed_frame_batch = [np.uint8(e * 255) for e in processed_frame_batch]
+            results = [self.jpeg.encode(e) for e in processed_frame_batch]
+        except Exception as e:
+            print(f"Error in processing, returning original frames: {e}")
+            return frame_bytes_batch
+        return results
     
 def main():
     # Parse command line arguments using argparse

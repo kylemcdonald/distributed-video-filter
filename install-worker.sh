@@ -1,7 +1,7 @@
 SERVICE_ID=worker
 SERVICE_NAME="transformirror worker"
 
-USER=transformirror1
+USER=transformirror2
 SERVICES_DIR=/etc/systemd/system/
 
 sudo tee "$SERVICES_DIR/$SERVICE_ID.service" > /dev/null <<EOL
