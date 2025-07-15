@@ -16,7 +16,7 @@ TARGET_SIZE = 480
 camera_fps = 30  # Increased from 15
 
 class WebcamApp:
-    def __init__(self, inverter_push_port=5555, inverter_pull_port=5556):
+    def __init__(self, distribute_port=5555, collect_port=5556):
         self.window = pyglet.window.Window(
             width=TARGET_SIZE * 2,  # Double width to accommodate both frames
             height=TARGET_SIZE, 
@@ -39,13 +39,13 @@ class WebcamApp:
         # Initialize ZeroMQ context and sockets
         self.context = zmq.Context()
         
-        # PUSH socket to send frames to inverter
-        self.push_socket = self.context.socket(zmq.PUSH)
-        self.push_socket.bind(f"tcp://*:{inverter_push_port}")
+        # ROUTER socket to handle client requests and send frames
+        self.distribute_socket = self.context.socket(zmq.ROUTER)
+        self.distribute_socket.bind(f"tcp://*:{distribute_port}")
         
         # PULL socket to receive inverted frames from inverter
-        self.pull_socket = self.context.socket(zmq.PULL)
-        self.pull_socket.bind(f"tcp://*:{inverter_pull_port}")
+        self.collect_socket = self.context.socket(zmq.PULL)
+        self.collect_socket.bind(f"tcp://*:{collect_port}")
         
         # Frame rate monitoring
         self.capture_fps_counter = 0
@@ -67,6 +67,11 @@ class WebcamApp:
         self.processing_thread = threading.Thread(target=self.process_frames)
         self.processing_thread.daemon = True
         self.processing_thread.start()
+        
+        # Start distribute handling thread
+        self.distribute_thread = threading.Thread(target=self.handle_distribute_requests)
+        self.distribute_thread.daemon = True
+        self.distribute_thread.start()
         
         # Start inverter output checking thread
         self.inverter_thread = threading.Thread(target=self.check_inverter_output)
@@ -135,19 +140,38 @@ class WebcamApp:
                 # Increment frame index
                 self.frame_index += 1
                 
-                # Send frame and frame index to inverter via ZeroMQ
-                try:
-                    # Send frame index and frame data as multi-part message
-                    self.push_socket.send_string(str(self.frame_index), zmq.SNDMORE)
-                    self.push_socket.send(frame_rgb.tobytes(), zmq.NOBLOCK)
-                except zmq.Again:
-                    # Skip if socket is not ready
-                    pass
-                
                 # Schedule texture updates less frequently
                 pyglet.clock.schedule_once(self.update_textures, 0)
                 
             except queue.Empty:
+                continue
+    
+    def handle_distribute_requests(self):
+        """Handle client requests for frames via ROUTER socket"""
+        while self.running:
+            try:
+                # Poll for messages from clients
+                if self.distribute_socket.poll(10):  # 10ms timeout
+                    # Receive client identity and message
+                    client_id = self.distribute_socket.recv(zmq.NOBLOCK)
+                    message = self.distribute_socket.recv_string(zmq.NOBLOCK)
+                    
+                    if message == "READY":
+                        # Client is ready for a frame
+                        if self.frame_data is not None:
+                            # Send frame index and frame data to client
+                            self.distribute_socket.send(client_id, zmq.SNDMORE)
+                            self.distribute_socket.send_string(str(self.frame_index), zmq.SNDMORE)
+                            self.distribute_socket.send(self.frame_data.tobytes(), zmq.NOBLOCK)
+                            # print(f"Sent frame {self.frame_index} to client {client_id}")
+                
+            except zmq.Again:
+                # No message available, continue
+                time.sleep(0.01)
+                continue
+            except Exception as e:
+                print(f"Error handling distribute request: {e}")
+                time.sleep(0.01)
                 continue
     
     def check_inverter_output(self):
@@ -155,12 +179,12 @@ class WebcamApp:
         while self.running:
             try:
                 # Receive inverted frame from inverter
-                frame_index = self.pull_socket.recv_string(zmq.NOBLOCK)
-                process_id = self.pull_socket.recv_string(zmq.NOBLOCK)
-                inverted_data = self.pull_socket.recv(zmq.NOBLOCK)
+                frame_index = self.collect_socket.recv_string(zmq.NOBLOCK)
+                process_id = self.collect_socket.recv_string(zmq.NOBLOCK)
+                inverted_data = self.collect_socket.recv(zmq.NOBLOCK)
                 
                 # Print frame index and process ID
-                print(f"Received frame {frame_index} from process {process_id}")
+                # print(f"Received frame {frame_index} from process {process_id}")
                 
                 # Convert bytes back to numpy array
                 inverted_frame = np.frombuffer(inverted_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
@@ -226,8 +250,8 @@ class WebcamApp:
             print("Camera released.")
         
         # Close ZeroMQ sockets
-        self.push_socket.close()
-        self.pull_socket.close()
+        self.distribute_socket.close()
+        self.collect_socket.close()
         self.context.term()
         print("ZeroMQ connections closed")
     
@@ -238,14 +262,14 @@ class WebcamApp:
 
 def main():
     # Parse command line arguments for ports
-    inverter_push_port = 5555
-    inverter_pull_port = 5556
+    distribute_port = 5555
+    collect_port = 5556
     
     if len(sys.argv) >= 3:
-        inverter_push_port = int(sys.argv[1])
-        inverter_pull_port = int(sys.argv[2])
+        distribute_port = int(sys.argv[1])
+        collect_port = int(sys.argv[2])
     
-    app = WebcamApp(inverter_push_port, inverter_pull_port)
+    app = WebcamApp(distribute_port, collect_port)
     app.run()
 
 if __name__ == "__main__":
