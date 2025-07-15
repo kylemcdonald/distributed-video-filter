@@ -80,12 +80,11 @@ class DiffusionProcessor:
             
             if warmup:
                 warmup_shape = [int(e) for e in warmup.split("x")]
-                images = np.zeros(warmup_shape, dtype=np.float32)
+                images = [np.zeros(warmup_shape[1:], dtype=np.float32)] * warmup_shape[0]
                 for i in range(3):
                     print(f"{self.device}: warmup {warmup} {i+1}/3")
-                    start_time = time.time()
                     self.run(
-                        images=[images[0]],
+                        images=images,
                         prompt="warmup",
                         num_inference_steps=2,
                         strength=1.0

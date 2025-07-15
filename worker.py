@@ -3,12 +3,14 @@ import time
 import os
 
 class Worker:
-    def __init__(self, host="localhost", distribute_port=5555, collect_port=5556):
+    def __init__(self, host="localhost", distribute_port=5555, collect_port=5556, batch_size=2):
         self.host = host
         self.distribute_port = distribute_port
         self.collect_port = collect_port
         self.running = False
         self.shutdown_requested = False
+        
+        self.batch_size = batch_size
         
         # Get process ID
         self.process_id = os.getpid()
@@ -32,7 +34,10 @@ class Worker:
         self.running = True
         print("Worker is running...")
         
-        while self.running:
+        frame_index_batch = []
+        frame_bytes_batch = []
+        
+        while self.running:            
             try:
                 # Send READY message to request a frame
                 try:
@@ -43,30 +48,37 @@ class Worker:
                     continue
                 
                 # Poll for response with timeout
-                if self.dealer_socket.poll(10):  # 10ms timeout
-                    start_time = time.time()
-                    
+                if self.dealer_socket.poll(10):  # 10ms timeout                    
                     # Receive frame index and frame data from webcam app
                     frame_index = self.dealer_socket.recv_string(zmq.NOBLOCK)
                     frame_bytes = self.dealer_socket.recv(zmq.NOBLOCK)
+                    frame_index_batch.append(frame_index)
+                    frame_bytes_batch.append(frame_bytes)
                     
                     # Print frame index
-                    print(f"Processing frame {frame_index}")
+                    # print(f"Received frame {frame_index} into {len(frame_bytes_batch)}")
+                    
+                    if len(frame_index_batch) < self.batch_size:
+                        continue
                     
                     # Process the frame using the worker's __call__ method
-                    processed_frame = self(frame_bytes)
-                    
+                    start_time = time.time()
+                    processed_frame_batch = self(frame_bytes_batch)
                     end_time = time.time()
                     
                     # Send processed frame, frame index, and process ID back to webcam app
                     try:
-                        self.collect_socket.send_string(frame_index, zmq.SNDMORE | zmq.NOBLOCK)
-                        self.collect_socket.send_string(str(self.process_id), zmq.SNDMORE | zmq.NOBLOCK)
-                        self.collect_socket.send_string(str(start_time), zmq.SNDMORE | zmq.NOBLOCK)
-                        self.collect_socket.send_string(str(end_time), zmq.SNDMORE | zmq.NOBLOCK)
-                        self.collect_socket.send(processed_frame.tobytes(), zmq.NOBLOCK)
+                        for i in range(self.batch_size):
+                            self.collect_socket.send_string(frame_index_batch[i], zmq.SNDMORE | zmq.NOBLOCK)
+                            self.collect_socket.send_string(str(self.process_id), zmq.SNDMORE | zmq.NOBLOCK)
+                            self.collect_socket.send_string(str(start_time), zmq.SNDMORE | zmq.NOBLOCK)
+                            self.collect_socket.send_string(str(end_time), zmq.SNDMORE | zmq.NOBLOCK)
+                            self.collect_socket.send(processed_frame_batch[i], zmq.NOBLOCK)
                     except zmq.Again:
                         print(f"Failed to send processed frame {frame_index} - socket buffer full")
+                    finally:
+                        frame_index_batch = []
+                        frame_bytes_batch = []
                 
             except zmq.Again:
                 # No message available, continue

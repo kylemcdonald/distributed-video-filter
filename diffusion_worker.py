@@ -5,11 +5,14 @@ import numpy as np
 import time
 import signal
 from diffusion_processor import DiffusionProcessor
+from turbojpeg import TurboJPEG
 
 class DiffusionWorker(Worker):
     def __init__(self, host="localhost", distribute_port=5555, collect_port=5556):
         super().__init__(host, distribute_port, collect_port)
-        self.processor = DiffusionProcessor()
+        self.processor = DiffusionProcessor(warmup=f"{self.batch_size}x512x512x3")
+        
+        self.jpeg = TurboJPEG()
         
         # Set up signal handlers for clean shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -24,14 +27,14 @@ class DiffusionWorker(Worker):
             print(f"\nReceived signal {signum}, shutting down...")
             self.running = False
     
-    def __call__(self, frame_bytes):
+    def __call__(self, frame_bytes_batch):
         """Run image to image diffusion on the input frame"""
         # Convert bytes to numpy array
-        input_frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(1024, 1024, 3)
-        input_frame = np.float32(input_frame) / 255.0
-        processed_frame = self.processor([input_frame], "a psychedelic landscape")
-        processed_frame = np.uint8(processed_frame[0] * 255)
-        return processed_frame 
+        input_frame_batch = [self.jpeg.decode(e) for e in frame_bytes_batch]
+        input_frame_batch = [np.float32(e) / 255.0 for e in input_frame_batch]
+        processed_frame_batch = self.processor(input_frame_batch, "a psychedelic landscape")
+        processed_frame_batch = [np.uint8(e * 255) for e in processed_frame_batch]
+        return [self.jpeg.encode(e) for e in processed_frame_batch]
     
 def main():
     # Parse command line arguments using argparse
@@ -43,7 +46,7 @@ def main():
     
     args = parser.parse_args()
     
-    worker = DiffusionWorker("100.83.2.63", args.distribute_port, args.collect_port)
+    worker = DiffusionWorker("transformirror1.local", args.distribute_port, args.collect_port)
     worker.start()
 
 if __name__ == "__main__":
