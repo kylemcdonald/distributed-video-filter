@@ -17,6 +17,7 @@ CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 CAMERA_FPS = 20
 PROMPT_CYCLE_TIME = 30
+RECONNECT_DELAY = 1.0  # seconds between reconnection attempts
 
 class WebcamApp(Distributor):
     def __init__(self, distribute_port=5555, collect_port=5556, frame_delay=8):
@@ -65,6 +66,10 @@ class WebcamApp(Distributor):
         self.ffmpeg_pipe = None
         self.new_frame_available = False
         
+        # Connection status tracking
+        self.is_connected = False
+        self.reconnect_event = threading.Event()
+        
         # Frame rate monitoring
         self.capture_fps_counter = 0
         self.capture_fps_start_time = time.time()
@@ -86,6 +91,10 @@ class WebcamApp(Distributor):
         self.frame_thread = threading.Thread(target=self.read_frames)
         self.frame_thread.daemon = True
         self.frame_thread.start()
+        
+    def check_webcam_available(self):
+        """Check if /dev/video0 exists and is accessible"""
+        return os.path.exists('/dev/video0')
         
     def load_prompts(self):
         try:
@@ -109,6 +118,7 @@ class WebcamApp(Distributor):
                     pygame.mixer.music.stop()
                     pygame.mixer.music.load(audio_file)
                     pygame.mixer.music.play()
+                print("Using prompt: ", self.prompts[self.current_prompt_idx])
                 print(f"Playing audio: {audio_file} ({self.current_prompt_idx} of {n})", flush=True)
             except Exception as e:
                 print(f"Error playing audio: {str(e)}", flush=True)
@@ -121,6 +131,10 @@ class WebcamApp(Distributor):
         pyglet.app.exit()
     
     def setup_ffmpeg_pipe(self):
+        if not self.check_webcam_available():
+            print("Webcam device /dev/video0 not found")
+            return False
+            
         crop_x = (CAPTURE_WIDTH - self.target_size) // 2
         crop_y = (CAPTURE_HEIGHT - self.target_size) // 2
         
@@ -139,6 +153,7 @@ class WebcamApp(Distributor):
                 stderr=subprocess.DEVNULL
             )
             print(f"FFmpeg pipe started: {ffmpeg_cmd}")
+            self.is_connected = True
             return True
         except FileNotFoundError:
             print("Error: ffmpeg not found. Please install ffmpeg.")
@@ -163,46 +178,97 @@ class WebcamApp(Distributor):
                 finally:
                     self.ffmpeg_pipe.stdout.close()
                     self.ffmpeg_pipe = None
+                    self.is_connected = False
                     print("FFmpeg process cleaned up successfully")
             except Exception as e:
                 print(f"Error during FFmpeg cleanup: {e}")
     
+    def attempt_reconnection(self):
+        """Attempt to reconnect to the webcam"""
+        print("Attempting to reconnect to webcam...")
+        
+        # Clean up existing pipe
+        self.cleanup_ffmpeg_pipe()
+        
+        # Wait a bit before attempting reconnection
+        time.sleep(RECONNECT_DELAY)
+        
+        # Try to reconnect
+        if self.setup_ffmpeg_pipe():
+            print("Successfully reconnected to webcam")
+            return True
+        else:
+            print("Failed to reconnect to webcam")
+            return False
+    
     def read_frames(self):
         print("Starting FFmpeg video capture...")
         if not self.setup_ffmpeg_pipe():
+            print("Initial webcam setup failed")
             return
+        
+        consecutive_failures = 0
         
         try:
             while self.running:
+                if not self.is_connected or not self.ffmpeg_pipe:
+                    # Try to reconnect indefinitely
+                    if self.attempt_reconnection():
+                        consecutive_failures = 0
+                    else:
+                        consecutive_failures += 1
+                        time.sleep(RECONNECT_DELAY)
+                        continue
+                
                 current_time = time.time()
                 
-                frame_data = self.ffmpeg_pipe.stdout.read(self.target_size * self.target_size * 3)
-                if not frame_data:
-                    time.sleep(0.01)
-                    continue
-
                 try:
-                    frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(self.target_size, self.target_size, 3)
-                except ValueError as e:
-                    print(f"Error reshaping frame data: {e}")
+                    frame_data = self.ffmpeg_pipe.stdout.read(self.target_size * self.target_size * 3)
+                    if not frame_data:
+                        # Check if process is still alive
+                        if self.ffmpeg_pipe.poll() is not None:
+                            print("FFmpeg process terminated unexpectedly")
+                            self.is_connected = False
+                            consecutive_failures += 1
+                            continue
+                        time.sleep(0.01)
+                        continue
+
+                    # Reset failure counter on successful read
+                    consecutive_failures = 0
+
+                    try:
+                        frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(self.target_size, self.target_size, 3)
+                    except ValueError as e:
+                        print(f"Error reshaping frame data: {e}")
+                        continue
+                    
+                    # Update capture FPS counter
+                    self.capture_fps_counter += 1
+                    if current_time - self.capture_fps_start_time >= 5.0:
+                        capture_fps = self.capture_fps_counter / (current_time - self.capture_fps_start_time)
+                        print(f"Capture FPS: {capture_fps:.1f}")
+                        self.capture_fps_counter = 0
+                        self.capture_fps_start_time = current_time
+                    
+                    # Store processed frame data for display
+                    self.frame_data = frame
+                    self.new_frame_available = True
+                    
+                    # Send frame to distributor for distribution to workers
+                    frame_bytes = self.jpeg.encode(frame)
+                    prompt = self.get_current_prompt()
+                    self.add_frame_for_distribution(frame_bytes, current_time, prompt)
+                    
+                except (OSError, IOError) as e:
+                    print(f"IO Error in capture loop: {e}")
+                    self.is_connected = False
+                    consecutive_failures += 1
                     continue
-                
-                # Update capture FPS counter
-                self.capture_fps_counter += 1
-                if current_time - self.capture_fps_start_time >= 5.0:
-                    capture_fps = self.capture_fps_counter / (current_time - self.capture_fps_start_time)
-                    print(f"Capture FPS: {capture_fps:.1f}")
-                    self.capture_fps_counter = 0
-                    self.capture_fps_start_time = current_time
-                
-                # Store processed frame data for display
-                self.frame_data = frame
-                self.new_frame_available = True
-                
-                # Send frame to distributor for distribution to workers
-                frame_bytes = self.jpeg.encode(frame)
-                prompt = self.get_current_prompt()
-                self.add_frame_for_distribution(frame_bytes, current_time, prompt)
+                except Exception as e:
+                    print(f"Error in capture loop: {e}")
+                    consecutive_failures += 1
+                    continue
         
         except Exception as e:
             print(f"Error in capture loop: {e}")
@@ -246,6 +312,18 @@ class WebcamApp(Distributor):
                 
             if self.processed_texture:
                 self.processed_texture.blit(0, 0, width=window_width, height=window_height)
+            
+        # Display connection status when not connected
+        if not self.is_connected:
+            label = pyglet.text.Label(
+                'Webcam disconnected - attempting to reconnect...',
+                font_name='Arial',
+                font_size=16,
+                x=window_width//2, y=window_height//2,
+                anchor_x='center', anchor_y='center',
+                color=(255, 255, 255, 255)
+            )
+            label.draw()
             
         # Update draw FPS counter
         self.draw_fps_counter += 1
